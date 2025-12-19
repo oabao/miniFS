@@ -1,0 +1,284 @@
+按照以下功能快照生成一份详细的大模型编码计划，代码可以参考@/src/ ：# DataLake File Storage Service - Functionality Snapshot
+
+## 服务架构概述
+
+### 双模式部署架构
+- **管理模式 (Manage Mode)**: 提供管理节点服务
+- **存储节点模式 (Node Mode)**: 提供文件存储服务
+
+### 核心组件
+- HTTP服务器 (Gin框架)
+- gRPC服务器 (管理模式)
+- 定时任务调度器 (robfig/cron)
+- 监控指标收集 (Prometheus)
+- 文件存储管理
+- 认证授权系统
+
+## API接口完整清单
+
+### 存储节点模式 (Node Mode) HTTP接口
+
+#### 1. 文件管理接口 (`/v1/collect/file`)
+- **POST** `/v1/collect/file/upload` - 文件上传
+  - 请求参数: `type` (日志类型), `md5` (文件MD5), `file` (文件数据)
+  - 响应: `nodeServer`, `filePath`, `logType`
+  - 功能: 上传文件到存储节点，支持MD5校验和大小限制
+
+- **GET** `/v1/collect/file/download` - 文件下载
+  - 请求参数: `log_type` (日志类型), `path` (文件路径)
+  - 响应: 文件流 (application/octet-stream)
+  - 功能: 下载指定文件，支持路径解密和安全检查
+
+- **POST** `/v1/collect/file/delete` - 批量删除文件
+  - 请求参数: `urlList` (文件URL列表)
+  - 响应: `succeed` (成功数量), `failed` (失败数量)
+  - 功能: 并发删除多个文件
+
+#### 2. 节点信息接口 (`/v1/collect/node`)
+- **GET** `/v1/collect/node/info` - 获取节点信息
+  - 响应: `free` (剩余空间百分比)
+  - 功能: 返回存储节点磁盘使用情况
+
+#### 3. 清理管理接口 (`/v1/collect/clean`) - 需要认证
+- **GET** `/v1/collect/clean/earliest` - 获取最早文件时间戳
+  - 响应: `recordTimestamp` (最早文件时间)
+  - 功能: 查询存储路径中最早的文件时间
+
+- **GET** `/v1/collect/clean/count` - 统计指定日期文件数量
+  - 请求参数: `recordDate` (记录日期)
+  - 响应: `fileCount` (文件数量)
+  - 功能: 统计指定日期的文件总数
+
+- **DELETE** `/v1/collect/clean` - 删除指定日期文件
+  - 请求参数: `recordDate` (记录日期)
+  - 响应: 无数据，返回成功状态
+  - 功能: 删除指定日期的所有文件
+
+### 管理模式 (Manage Mode) 接口
+
+#### 1. HTTP清理接口 (`/v1/collect/clean`)
+- **GET** `/v1/collect/clean/earliest` - 获取所有节点最早文件时间
+- **GET** `/v1/collect/clean/count` - 统计所有节点指定日期文件数量
+- **DELETE** `/v1/collect/clean` - 删除所有节点指定日期文件
+
+#### 2. gRPC接口
+- **rpc** `getNode` - 获取可用存储节点
+  - 请求: `GetNodeRequest` (空参数)
+  - 响应: `GetNodeResponse` (包含节点地址)
+  - 功能: 随机选择一个可用的存储节点
+
+## 配置参数详解
+
+### 服务器配置
+```json
+{
+  "server": {
+    "protocol": "http/tcp",
+    "host": "0.0.0.0", 
+    "port": 7878,
+    "mode": "debug/release"
+  }
+}
+```
+
+### 定时任务配置
+```json
+{
+  "cronOp": [
+    {
+      "task": "task_name",
+      "spec": "cron_expression",
+      "enable": true/false
+    }
+  ]
+}
+```
+
+### 管理节点特有配置
+```json
+{
+  "manageOp": {
+    "nodeServerTimeout": 3,
+    "nodeServerCleanTimeout": 60,
+    "nodeSvcProtocolScheme": "http",
+    "nodeSvcPort": 7878,
+    "nodeSvcHost": "service.domain",
+    "nodeServerUri": "v1/collect/node/info",
+    "initProbeNodeInterval": 3,
+    "debugNodeMapInterval": 10,
+    "httpServerConf": {}
+  }
+}
+```
+
+### 存储节点特有配置
+```json
+{
+  "nodeOp": {
+    "storageRootDir": "/matrix/data/storage",
+    "storageRootMaxSize": 200,
+    "storageRootMaxSizeUnit": "GiB",
+    "storageTmpDir": "/matrix/data/tmp-storage",
+    "fileExpiredDay": 3,
+    "fileMinReserveDay": 1,
+    "diskSpaceMaxUsedPercent": 80,
+    "deleteGoroutineNum": 10,
+    "encryptEnable": true,
+    "cryptKey": "encrypted_key",
+    "uploadLimiter": {},
+    "downloadLimiter": {},
+    "uploadTypes": {},
+    "customizableFileExpiredDay": {},
+    "uploadFileMaxLimitSize": 22020096,
+    "cleanAuthCfg": {},
+    "cleanCfg": {}
+  }
+}
+```
+
+## 文件存储结构
+
+### 存储路径格式
+- **正式存储**: `{storageRootDir}/{logType}/{timestamp}/{md5_prefix}/{filename}`
+- **临时存储**: `{storageTmpDir}/{logType}/{timestamp}/{md5_prefix}/{filename}`
+- **时间戳格式**: `2006010215` (年月日时分)
+
+### 支持的日志类型
+- **STA类型**: HTTP_LOG, DNS_LOG, SEC_LOG, ASSET, ARP_LOG等40+种
+- **NGAF类型**: SECEVENT, CONFIG, ANTILOG, IOT_DEVICE_AUDIT_LOG等
+
+### 文件命名规则
+- 支持标准文件名格式
+- MD5校验确保文件完整性
+- 基于MD5前两位分目录存储
+
+## 认证安全机制
+
+### AK/SK认证
+- **AccessKey**: 访问凭证
+- **SecretKey**: 签名密钥
+- **认证头**: `X-Auth-AccessKey`
+- **签名验证**: 基于请求参数和SecretKey生成签名
+
+### 文件路径加密
+- **加密算法**: AES-CBC
+- **加密内容**: 文件存储路径
+- **密钥管理**: 配置文件中存储加密后的工作密钥
+
+### 限流保护
+- **上传限流**: 支持并发数和速度双重限制
+- **下载限流**: 支持并发数和速度双重限制
+- **配置参数**: limitRate, burstRatio
+
+## 定时任务清单
+
+### 管理模式任务
+1. **refresh_pod_dns_task** - 刷新存储节点Pod DNS
+   - 默认频率: 每10秒
+   - 功能: 动态发现存储节点
+
+2. **pull_node_info_task** - 拉取节点信息
+   - 默认频率: 每1秒
+   - 功能: 更新节点状态信息
+
+### 存储节点任务
+1. **clean_expired_files_task** - 清理过期文件
+   - 默认频率: 每1小时
+   - 功能: 删除超过保留期的文件
+
+2. **collect_storage_size_task** - 采集存储大小
+   - 默认频率: 每5分钟 (默认禁用)
+   - 功能: 统计存储空间使用情况
+
+3. **check_disk_space_limit_task** - 检查磁盘空间
+   - 默认频率: 每5分钟 (默认禁用)
+   - 功能: 监控磁盘使用率
+
+4. **clean_dir_space_limit_task** - 目录空间限制清理
+   - 默认频率: 每日1,3,5点 (默认禁用)
+   - 功能: 基于存储上限执行清理
+
+### 系统检查任务
+- **LocalOsTimeChecker** - 系统时间检查
+  - 检查频率: 每10秒
+  - 功能: 监控系统时间变化
+
+## 监控指标体系
+
+### Prometheus指标
+- `manage_connect_node_state` - 管理节点连接状态
+- `manage_get_node_failed_total` - 获取节点失败次数
+- `node_upload_files_total` - 节点上传文件总数
+- `node_upload_file_size` - 节点上传文件大小分布
+- `node_download_files_total` - 节点下载文件总数
+- `node_download_file_size` - 节点下载文件大小分布
+- `node_upload_file_cost` - 节点上传请求耗时
+- `node_download_file_cost` - 节点下载请求耗时
+- `node_disk_use_state` - 节点磁盘使用状态
+- `node_delete_files_total` - 节点删除文件总数
+- `node_clean_task_cost` - 节点清理任务耗时
+
+### 指标标签
+- `pod_name` - Pod名称
+- `log_type` - 日志类型
+- `status` - 操作状态
+- `error_type` - 错误类型
+
+## 启动命令和参数
+
+### 基本启动命令
+```bash
+./file-storage-svc server -c config.json -m [manage|node]
+```
+
+### 参数说明
+- `-c/--config`: 配置文件路径 (必需)
+- `-m/--mode`: 运行模式 (必需，可选: manage, node)
+
+### 环境变量
+- `POD_NAME`: Pod名称 (用于监控指标)
+- `LOG_LEVEL`: 日志级别 (debug时输出节点映射信息)
+
+## 错误码体系
+
+### 通用错误码
+- `0` - 成功
+- `10001` - 内部服务器错误
+- `10002` - 参数验证失败
+- `30001` - 签名认证失败
+
+### 业务错误码
+- `20001` - 上传文件获取失败
+- `20002` - 文件大小超限
+- `20003` - 上传计数限流
+- `20004` - 上传速度限流
+- `20005` - 不支持的日志类型
+- `20006` - MD5校验失败
+- `20007` - 分配上传目录失败
+- `20008` - 保存上传文件失败
+- `20009` - 文件加密失败
+- `21001` - 文件解密失败
+- `21002` - 文件路径校验失败
+- `21003` - 文件不存在
+- `21004` - 文件读取失败
+- `21005` - 下载计数限流
+- `21006` - 下载速度限流
+
+## 部署要求
+
+### 系统要求
+- 支持Kubernetes部署
+- 需要持久化存储卷
+- 支持Service discovery
+- 网络策略支持
+
+### 资源要求
+- 存储空间: 根据业务需求配置
+- 内存: 推荐至少2GB
+- CPU: 推荐至少2核
+- 网络: 支持HTTP/gRPC协议
+
+### 依赖服务
+- PostgreSQL (可选，用于存储元数据)
+- Prometheus (监控)
+- Kubernetes DNS服务发现
