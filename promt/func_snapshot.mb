@@ -1,4 +1,4 @@
-按照以下功能快照生成一份详细的大模型编码计划，代码可以参考@/src/ ：# DataLake File Storage Service - Functionality Snapshot
+按照以下功能快照生成一份详细的大模型编码计划，代码可以参考@/src/ ：# Mini File Storage Service - Functionality Snapshot
 
 ## 服务架构概述
 
